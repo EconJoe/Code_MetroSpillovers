@@ -1,4 +1,6 @@
 
+clear
+set more off
 
 global path "B:\Research\Projects\RDSpillovers\Spillovers9"
 
@@ -31,6 +33,8 @@ keep perwt ///
 ********************************************************************************************************************
 *********************************************** SAMPLE RESTRICTIONS ************************************************
 ********************************************************************************************************************
+* Drop individual have have a weight of 0
+drop if perwt==0
 
 * Drop if weeks worked last year is "N/A (or Missing)"
 * Note: WKSWORK1 measures the precise number of wkkes worked last year while WKSWORK2 measures in intervals. 
@@ -46,7 +50,7 @@ drop if age<18 | age>65
 * Drop individuals that are "Not identifiable or not in an MSA"
 * Note: We lose 8,813,778 observations out of 30,289,352, leaving us with 21,475,574
 drop if metaread==0
-drop if metaread==.
+*drop if metaread==.
 	 
 * Drop individuals in the armed services
 * Note: We lose 116,423 observations out of 30,289,352, leaving us with 30,172,929
@@ -111,8 +115,13 @@ foreach i in `imputed' {
 ********************************************************************************************************************
 ****************************** CONSTRUCTION OF THE SAMPLE: AGGREGATION OF METROS ***********************************
 ********************************************************************************************************************
+*cd $path\Code_Spillovers9
+*do MetroAggregation.do
+
 cd $path\Code_Spillovers9
-do MetroAggregation.do
+rename metaread metrocode
+do AggregationCodes.do
+rename metrocode metaread_agg
 ********************************************************************************************************************
 
 ********************************************************************************************************************
@@ -318,23 +327,23 @@ drop if incwage<40 | incwage>4000
 gen lw=ln(incwage)
 drop incwage
 label var lw "Log real weekly wages"
+********************************************************************************************************************
+
+
 
 ********************************************************************************************************************
 ********************************************************************************************************************
-
+* ADD METRO-LEVEL CONTROLS
 
 gen year_agg=year
 replace year_agg=2010 if year_agg==2009 | year_agg==2011
-
-sort metaread year_agg
 tempfile hold
 save `hold', replace
 
 
 cd $path\Data\Raw
 use XVAR.dta, clear
-rename metrocode metaread
-keep metaread pop* total* pat4* pat6* ss1*
+keep metrocode pop* total* pat4* pat6* ss1*
 drop pop73
 
 rename pop70 pop1970
@@ -363,7 +372,7 @@ rename ss1_90 ss11990
 rename ss1_00 ss12000
 rename ss1_10 ss12010
 
-reshape long pop total pat4 pat6 ss1, i(metaread) j(year) 
+reshape long pop total pat4 pat6 ss1, i(metrocode) j(year) 
 drop if year==1970
 label var total "Academic R&D"
 label var pat4 "Patents"
@@ -373,16 +382,53 @@ label var ss1 "Share shift index"
 gen lpop=ln(pop)
 label var lpop "Log population"
 
-rename metaread metaread_agg
+tempfile xvar
+save `xvar', replace
+
+
+cd $path\Data\Raw
+use PRA_Data, clear
+keep metroname metrocode vcr* pcr* pse* u*
+drop *06
+gen id=_n
+
+local vars `" "vcr" "pcr" "pse" "u" "'
+
+foreach i in `vars' {
+
+	rename `i'80 `i'1
+	rename `i'90 `i'2
+	rename `i'00 `i'3
+	rename `i'10 `i'4
+}
+
+order metroname metrocode vcr* pcr* pse* u*, seq
+reshape long vcr pcr pse u, i(id) j(year)
+drop id
+replace year=1980 if year==1
+replace year=1990 if year==2
+replace year=2000 if year==3
+replace year=2010 if year==4
+
+collapse (mean) vcr* pcr* pse* u*, by(metrocode year)
+
+order metrocode year
+sort metrocode year
+
+merge m:1 metrocode year using `xvar'
+drop _merge
+
+rename metrocode metaread_agg
 rename year year_agg
-sort metaread year_agg
 merge 1:m metaread_agg year_agg using `hold'
 keep if _merge==3
 drop _merge
-sort metaread year_agg
 save `hold', replace
 ********************************************************************************************************************
+
 ********************************************************************************************************************
+********************************************************************************************************************
+* ADD INSTRUMENTAL VARIABLES
 
 local ivs enroliv lguniv 
 foreach i in `ivs' {
@@ -390,7 +436,6 @@ foreach i in `ivs' {
 	cd $path\Data\Raw\IVs
 	use `i'.dta, clear
 	rename metrocode metaread_agg
-	sort metaread
 	merge 1:m metaread_agg using `hold'
 	tab _merge
 	drop if _merge==1
@@ -411,13 +456,13 @@ label var lg "Land Grant University"
 label var enrol25 "1925 Enrollment Proportion"
 label var degree25 "1925 Degree Proportion"
 
-sort metaread year_agg
 save `hold', replace
+********************************************************************************************************************
+
 
 ********************************************************************************************************************
-******************************  ***********************************
 ********************************************************************************************************************
-keep pop metaread year_agg
+keep pop metaread_agg year_agg
 duplicates drop
 
 tempfile pop
@@ -428,22 +473,20 @@ replace year_agg=1995 if year_agg==2000
 replace year_agg=2005 if year_agg==2010
 replace pop=.
 append using `pop'
-sort metaread year_agg
-by metaread: ipolate pop year, gen(pop_imp) epolate
+sort metaread_agg year_agg
+by metaread_agg: ipolate pop year, gen(pop_imp) epolate
 drop pop
 keep if year==1975 | year==1985 | year==1995 | year==2005
-sort metaread year_agg
 save `pop', replace
 
 cd $path\Data\Raw
 use rd_five_year_lag, clear
 keep year totse mc
-rename mc metaread
+rename mc metaread_agg
 rename year year_agg
 rename totse total_lag5
-collapse (sum) total_lag5, by(metaread year_agg)
-sort metaread year
-merge 1:1 metaread year using `pop'
+collapse (sum) total_lag5, by(metaread_agg year_agg)
+merge 1:1 metaread_agg year using `pop'
 keep if _merge==3
 drop _merge
 
@@ -465,28 +508,26 @@ replace year_agg=1990 if year_agg==1985
 replace year_agg=2000 if year_agg==1995
 replace year_agg=2010 if year_agg==2005
 label var total_lag5 "Academic R&D lagged 5 years"
-sort metaread year_agg
-merge 1:m metaread year_agg using `hold'
+merge 1:m metaread_agg year_agg using `hold'
 drop _merge
-sort metaread year_agg
 save `hold', replace
 ********************************************************************************************************************
-********************************************************************************************************************
 
+********************************************************************************************************************
+********************************************************************************************************************
 cd $path\Data\Raw
 use jadams_data, clear
-rename metrocode metaread_agg
-collapse (sum) papers citsuniv citsfirm, by(metaread_agg year)
+collapse (sum) papers citsuniv citsfirm, by(metrocode year)
 replace year=year+1900
 tempfile ja
 save `ja', replace
 keep if year==1981 | year==1990 | year==1999
 replace year=1980 if year==1981
 replace year=2000 if year==1999
+rename metrocode metaread_agg
 rename year year_agg
 gen citsall=citsuniv+citsfirm
-sort metaread year_agg
-merge 1:m metaread year_agg using `hold'
+merge 1:m metaread_agg year_agg using `hold'
 drop if _merge==1
 drop _merge
 replace papers=papers/pop
@@ -506,8 +547,8 @@ order metaread_agg metaread year lw total total_lag5 pat4 pat6 collgradm
 compress
 
 cd $path\Data
-save PANEL.dta, replace
-
+save PANEL_test.dta, replace
+********************************************************************************************************************
 
 
 ********************************************************************************************************************
@@ -522,14 +563,12 @@ by lpop, sort: egen rank=min(rank_)
 gsort -lpop
 keep if rank<=100
 keep metaread_agg
-merge 1:m metaread_agg using PANEL
+merge 1:m metaread_agg using PANEL_test
 gen top100=0
 replace top100=1 if _merge==3
 drop _merge
 
 compress
 cd $path\Data
-save PANEL.dta, replace
-
-
-
+save PANEL_test.dta, replace
+********************************************************************************************************************
